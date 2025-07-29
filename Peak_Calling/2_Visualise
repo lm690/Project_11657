@@ -1,0 +1,98 @@
+library(GenomicRanges)
+library(rtracklayer)
+library(tidyverse)
+library(patchwork)
+
+# Set directories
+peak_dir <- "/lustre/projects/Research_Project-T111004/Lachlan/Project_11657/Peak_Calling/Peaks"
+plot_dir <- "/lustre/projects/Research_Project-T111004/Lachlan/Project_11657/Peak_Calling/Plots"
+dir.create(plot_dir, showWarnings = FALSE)
+
+# Custom signal extraction
+extract_signal_matrix <- function(signal, regions, bins = 100) {
+  mat <- matrix(NA, nrow = length(regions), ncol = bins)
+  for (i in seq_along(regions)) {
+    region <- regions[i]
+    signal_in_region <- subsetByOverlaps(signal, region)
+    if (length(signal_in_region) > 0) {
+      binsize <- width(region) / bins
+      starts <- start(region) + binsize * (0:(bins - 1))
+      ends <- starts + binsize
+      bins_gr <- GRanges(seqnames = seqnames(region),
+                         ranges = IRanges(start = starts, end = ends))
+      ov <- findOverlaps(bins_gr, signal_in_region)
+      
+      signal_vec <- rep(0, bins)
+      tapply_result <- tapply(score(signal_in_region)[subjectHits(ov)], queryHits(ov), mean)
+      if (length(tapply_result) > 0) {
+        signal_vec[as.integer(names(tapply_result))] <- tapply_result
+      }
+      mat[i, ] <- signal_vec
+    } else {
+      mat[i, ] <- rep(0, bins)
+    }
+  }
+  return(mat)
+}
+
+# Find all BigWig files
+bw_files <- list.files(peak_dir, pattern = ".filtered.bw$", full.names = TRUE)
+
+for (bw_file in bw_files) {
+  sample_name <- sub("\\.filtered\\.bw$", "", basename(bw_file))
+  peak_file <- file.path(peak_dir, paste0(sample_name, ".filtered_peaks.narrowPeak"))
+
+  if (!file.exists(peak_file)) {
+    cat("? Missing peak file for:", sample_name, "\n")
+    next
+  }
+
+  cat("\n\nProcessing sample:", sample_name, "\n")
+
+  peaks <- import(peak_file, format = "narrowPeak")
+  signal <- import(bw_file, format = "BigWig")
+
+  top_peaks <- head(peaks[order(-peaks$score)], 1000)
+  top_peaks <- resize(top_peaks, width = 1000, fix = "center")
+
+  mat <- extract_signal_matrix(signal, top_peaks, bins = 100)
+
+  df <- as.data.frame(mat)
+  df$Peak <- 1:nrow(df)
+  df_long <- pivot_longer(df, cols = -Peak, names_to = "Bin", values_to = "Signal")
+  df_long$Bin <- as.numeric(gsub("V", "", df_long$Bin))
+  df_long$Signal_Capped <- pmin(df_long$Signal, 5)
+
+  # Create heatmap plot
+  heatmap_plot <- ggplot(df_long, aes(x = Bin, y = Peak, fill = Signal_Capped)) +
+    geom_tile() +
+    scale_fill_gradient(low = "white", high = "red", name = "Signal (capped at 5)") +
+    labs(x = "Distance from peak center (binned)", y = "Peaks (ranked)") +
+    theme_bw() +
+    theme(axis.text.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          panel.grid = element_blank())
+
+  # Create average profile plot
+  avg_signal <- df_long %>%
+    group_by(Bin) %>%
+    summarize(mean_signal = mean(Signal_Capped, na.rm = TRUE))
+
+  profile_plot <- ggplot(avg_signal, aes(x = Bin, y = mean_signal)) +
+    geom_line(color = "darkred", size = 1) +
+    labs(y = "Mean signal", x = NULL) +
+    theme_bw() +
+    theme(axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          panel.grid = element_blank())
+
+  # Combine profile + heatmap with sample name as title
+combined_plot <- (profile_plot / heatmap_plot) +
+  plot_layout(heights = c(1, 4)) +
+  plot_annotation(title = sample_name)
+
+  out_file <- file.path(plot_dir, paste0(sample_name, "_ggplot_heatmap_with_profile.png"))
+  ggsave(out_file, plot = combined_plot, width = 8, height = 8, dpi = 300)
+
+  cat("? Combined plot saved for:", sample_name, "\n")
+}
