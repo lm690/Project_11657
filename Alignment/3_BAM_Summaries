@@ -1,0 +1,55 @@
+#!/bin/bash
+#SBATCH --export=ALL #export all enviroment variables to the batch job
+#SBATCH -p mrcq #select partition
+#SBATCH --time=24:00:00 ##maximum wall time for the job
+#SBATCH -A Research_Project-MRC190311 #research project to submit under
+#SBATCH --nodes=1 #specify number of nodes
+#SBATCH --ntasks-per-node=16 # specify number of processors per node
+#SBATCH --mail-type=END # send email at job completion
+#SBATCH --error=WGCNA_%j.err # error file
+#SBATCH --output=WGCNA_%j.log # output file
+#SBATCH --job-name=Alignment_1
+
+source /lustre/home/lm690/miniconda3/etc/profile.d/conda.sh
+
+conda activate chipmentation
+
+# Set your paths
+BAM_DIR="/lustre/projects/Research_Project-T111004/Lachlan/Project_11657/Alignment/BAM"
+OUT_DIR="/lustre/projects/Research_Project-T111004/Lachlan/Project_11657/Alignment/QC_summary"
+GROUP_FILE="/lustre/projects/Research_Project-T111004/Lachlan/Project_11657/Alignment/sample_groups/group_1.txt"
+
+# Create output directory if it doesn't exist
+mkdir -p "$OUT_DIR"
+
+# Header for summary file
+echo -e "Sample\tTotal_Reads\tMapped\tProperly_Paired\tDuplicate_Reads\tInsert_Mean\tInsert_Median" > "${OUT_DIR}/bam_qc_summary.tsv"
+
+# Loop through each sample
+while read SAMPLE; do
+  BAM="${BAM_DIR}/${SAMPLE}.bam"
+  INSERT_METRICS="${OUT_DIR}/${SAMPLE}_insert_metrics.txt"
+  FLAGSTAT_OUT=$(samtools flagstat "$BAM")
+
+  # Extract values from flagstat
+  TOTAL_READS=$(echo "$FLAGSTAT_OUT" | grep "in total" | awk '{print $1}')
+  MAPPED=$(echo "$FLAGSTAT_OUT" | grep "mapped (" | awk '{print $1}')
+  PROPERLY_PAIRED=$(echo "$FLAGSTAT_OUT" | grep "properly paired (" | awk '{print $1}')
+  DUPLICATES=$(echo "$FLAGSTAT_OUT" | grep "duplicates" | awk '{print $1}')
+
+  # Insert size metrics
+  picard CollectInsertSizeMetrics \
+    I="$BAM" \
+    O="$INSERT_METRICS" \
+    H="${OUT_DIR}/${SAMPLE}_insert_histogram.pdf" \
+    M=0.5 \
+    VALIDATION_STRINGENCY=SILENT > /dev/null
+
+  # Extract insert size values
+  MEAN_INSERT=$(grep -A1 "MEDIAN_INSERT_SIZE" "$INSERT_METRICS" | tail -1 | awk '{print $5}')
+  MEDIAN_INSERT=$(grep -A1 "MEDIAN_INSERT_SIZE" "$INSERT_METRICS" | tail -1 | awk '{print $1}')
+
+  # Append summary
+  echo -e "${SAMPLE}\t${TOTAL_READS}\t${MAPPED}\t${PROPERLY_PAIRED}\t${DUPLICATES}\t${MEAN_INSERT}\t${MEDIAN_INSERT}" >> "${OUT_DIR}/bam_qc_summary.tsv"
+
+done < "$GROUP_FILE"
