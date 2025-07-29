@@ -1,0 +1,56 @@
+#!/bin/bash
+#SBATCH --export=ALL #export all enviroment variables to the batch job
+#SBATCH -p mrcq #select partition
+#SBATCH --time=24:00:00 ##maximum wall time for the job
+#SBATCH -A Research_Project-MRC190311 #research project to submit under
+#SBATCH --nodes=16 #specify number of nodes
+#SBATCH --ntasks-per-node=16 # specify number of processors per node
+#SBATCH --mail-type=END # send email at job completion
+#SBATCH --error=counts_%j.err # error file
+#SBATCH --output=counts_%j.log # output file
+#SBATCH --job-name=counts
+
+source /lustre/home/lm1035/miniconda3/etc/profile.d/conda.sh
+
+conda activate chip2
+
+# Set working directory
+cd /lustre/projects/Research_Project-T111004/Lachlan/Project_11657/4_Normalise
+
+# Create output directory
+output_dir="Counts_Output"
+mkdir -p "$output_dir"
+
+# Define input directories
+bam_dir="/lustre/projects/Research_Project-T111004/Lachlan/Project_11657/2_Filtering/Filtered"
+peaks_dir="/lustre/projects/Research_Project-T111004/Lachlan/Project_11657/3_Peak_Calling/Peaks"
+
+# Generate consensus peak file (only if not already present)
+consensus_file="${output_dir}/consensus_peaks.bed"
+if [ ! -s "$consensus_file" ]; then
+    echo "Creating $consensus_file..."
+    cat "$peaks_dir"/*.narrowPeak | sort -k1,1 -k2,2n | bedtools merge > "$consensus_file"
+fi
+
+# Loop through BAM files, excluding those with 'IgG' in the name
+for bam in "$bam_dir"/*.filtered.bam; do
+    filename=$(basename "$bam")
+    
+    # Skip files with 'IgG' in the name
+    if [[ "$filename" == *IgG* ]]; then
+        echo "Skipping IgG sample: $filename"
+        continue
+    fi
+
+    sample_name="${filename%.filtered.bam}"
+    echo "Processing $sample_name..."
+
+    bedtools coverage \
+        -a "$consensus_file" \
+        -b "$bam" \
+        -counts > "${output_dir}/${sample_name}_counts.tsv"
+
+    echo "Output written to: ${output_dir}/${sample_name}_counts.tsv"
+done
+
+echo "? All counts generated in: $output_dir"
