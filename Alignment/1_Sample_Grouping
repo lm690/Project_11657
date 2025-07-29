@@ -1,0 +1,30 @@
+#conda install -c bioconda bowtie2
+#conda install -c bioconda samtools
+#pip install macs3
+
+#wget https://hgdownload.soe.ucsc.edu/goldenPath/mm39/bigZips/mm39.fa.gz
+#gunzip mm39.fa.gz
+
+#bowtie2-build mm39.fa mm39
+
+# Set fastq directory
+fastq_dir <- "/lustre/projects/Research_Project-T111004/Lachlan/Project_11657/X0050/11_fastp_trimmed/"
+
+# Get all R1 files
+r1_files <- list.files(fastq_dir, pattern = "_R1_001_fastp.fastq.gz$", full.names = TRUE)
+
+# Extract sample names
+samples <- sub("_R1_001_fastp.fastq.gz", "", basename(r1_files))
+
+# Directory to store sample group files
+group_dir <- "/lustre/projects/Research_Project-T111004/Lachlan/Project_11657/Alignment/sample_groups/"
+dir.create(group_dir, showWarnings = FALSE)
+
+group_size <- 5  # adjust as needed
+sample_groups <- split(samples, ceiling(seq_along(samples) / group_size))
+
+# Write each group to a file
+for (i in seq_along(sample_groups)) {
+  group_file <- file.path(group_dir, paste0("group_", i, ".txt"))
+  writeLines(sample_groups[[i]], group_file)
+}
