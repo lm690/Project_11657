@@ -1,0 +1,35 @@
+#!/bin/bash
+#SBATCH --export=ALL #export all enviroment variables to the batch job
+#SBATCH -p mrcq #select partition
+#SBATCH --time=24:00:00 ##maximum wall time for the job
+#SBATCH -A Research_Project-MRC190311 #research project to submit under
+#SBATCH --nodes=1 #specify number of nodes
+#SBATCH --ntasks-per-node=16 # specify number of processors per node
+#SBATCH --mail-type=END # send email at job completion
+#SBATCH --error=Filering_%j.err # error file
+#SBATCH --output=Filering_%j.log # output file
+#SBATCH --job-name=Filtering
+
+source /lustre/home/lm690/miniconda3/etc/profile.d/conda.sh
+
+conda activate chipmentation
+
+BAM_DIR="/lustre/projects/Research_Project-T111004/Lachlan/Project_11657/Alignment/BAM"
+FILTERED_DIR="/lustre/projects/Research_Project-T111004/Lachlan/Project_11657/Filtering/Filtered"
+mkdir -p "$FILTERED_DIR"
+
+for bam in "$BAM_DIR"/*.bam; do
+  sample=$(basename "$bam" .bam)
+  out_bam="${FILTERED_DIR}/${sample}.filtered.bam"
+
+  echo "Filtering $sample"
+
+  samtools view -@ 4 -b -f 0x2 -F 0x4 -q 30 "$bam" > "$out_bam"
+  samtools index "$out_bam"
+done
+
+# -@4 = 4 threads for faster processing
+# -b = output in BAM format
+# -f 0x2 = include read pairs where both reads are mapped
+# -F 0x4 = Exclude reads only unmapped reads
+# -q 30 MAPQ score >/= 30
