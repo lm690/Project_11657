@@ -1,0 +1,46 @@
+# Set workng directory
+setwd("C:/Users/lm690/OneDrive - University of Exeter (1)/Documents/R/Chipmentation/TSS_Promoters/Modelling")
+
+# Libraries
+library(dplyr)
+library(ChIPseeker)
+library(TxDb.Mmusculus.UCSC.mm39.knownGene)
+library(GenomicRanges)
+
+# Load corrected expression matrix
+vsd_corrected <- read.csv("C:/Users/lm690/OneDrive - University of Exeter (1)/Documents/R/Chipmentation/VPA/vsd_corrected_matrix.csv", row.names = 1, check.names = FALSE)
+
+# Load sample metadata
+sample_info_full <- read.csv("C:/Users/lm690/OneDrive - University of Exeter (1)/Documents/R/Chipmentation/VPA/Pheno_final_2.csv", row.names = 1)
+
+# 1. Identify valid rows
+split_coords <- strsplit(rownames(vsd_corrected), "_")
+lens <- sapply(split_coords, length)
+valid_rows <- which(lens == 3)
+valid_coords <- split_coords[valid_rows]
+valid_names <- rownames(vsd_corrected)[valid_rows]
+
+# 2. Convert to data frame and make GRanges
+coord_df <- do.call(rbind, valid_coords) %>%
+  as.data.frame() %>%
+  setNames(c("chr", "start", "end")) %>%
+  mutate(start = as.numeric(start), end = as.numeric(end))
+
+peak_gr <- GRanges(seqnames = coord_df$chr, ranges = IRanges(start = coord_df$start, end = coord_df$end))
+
+# 3. Annotate peaks
+peak_annotated <- annotatePeak(peak_gr, TxDb = TxDb.Mmusculus.UCSC.mm39.knownGene)
+annot_df <- as.data.frame(peak_annotated)
+
+# 4. Filter for promoter/TSS
+promoter_tss_peaks <- valid_names[grepl("Promoter", annot_df$annotation)]
+
+# 5. Subset the corrected VSD matrix
+vsd_promoter_tss <- vsd_corrected[promoter_tss_peaks, ]
+
+nrow(vsd_promoter_tss)
+# [1] 113787
+nrow(vsd_corrected)
+# [1] 609970
+
+write.csv(vsd_promoter_tss, file = "vsd_promoter.csv")
