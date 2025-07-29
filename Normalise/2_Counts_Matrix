@@ -1,0 +1,25 @@
+library(dplyr)
+library(readr)
+library(tidyr)
+library(purrr)
+
+# Set path to your .tsv files
+count_dir <- "/lustre/projects/Research_Project-T111004/Lachlan/Project_11657/4_Normalise/Counts_Output"
+
+# List all non-IgG .tsv files (excluding the failed one)
+count_files <- list.files(count_dir, pattern = "_counts.tsv$", full.names = TRUE)
+
+# Function to read each file and label the count column
+read_count_file <- function(file) {
+  sample <- gsub("_counts.tsv", "", basename(file))
+  read_tsv(file, col_names = c("chr", "start", "end", sample))
+}
+
+# Read and merge all files
+count_list <- map(count_files, read_count_file)
+merged_counts <- reduce(count_list, full_join, by = c("chr", "start", "end")) %>%
+  unite("peak", chr:start:end, sep = "_") %>%
+  tibble::column_to_rownames("peak")
+
+# Save matrix (optional)
+write.csv(merged_counts, "raw_count_matrix.csv")
