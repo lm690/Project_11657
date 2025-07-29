@@ -1,0 +1,60 @@
+setwd("C:/Users/lm690/OneDrive - University of Exeter (1)/Documents/R/Chipmentation/VPA")
+
+sample_info_full<-read.csv("Pheno_final.csv", row.names=1)
+vsd_matrix<-read.csv("vsd_normalized_matrix.csv", row.names=1)
+
+
+# Match order of samples and remove outliers (ASC2, AWC2)
+sample_info_full <- sample_info_full[!grepl("ASC2|AWC2", rownames(sample_info_full)), ]
+vsd_matrix <- vsd_matrix[, !grepl("ASC2|AWC2", colnames(vsd_matrix))]
+
+write.csv(sample_info_full, file = "Pheno_final_2.csv")
+
+colnames(vsd_matrix) <- sub("^X", "", colnames(vsd_matrix))
+vsd_matrix <- vsd_matrix[, rownames(sample_info_full)]
+
+library(limma)
+library(tibble)
+library(dplyr)
+library(ggrepel)
+library(ggplot2)
+
+# Select matrix of covariates to regress out
+covariates <- sample_info_full[, c("gc_content", "dup_rate", "FRiP")]
+
+# Convert to matrix
+covariate_matrix <- as.matrix(covariates)
+
+# Regress out effects
+vsd_corrected <- removeBatchEffect(vsd_matrix, covariates = covariate_matrix)
+
+write.csv(vsd_corrected, "vsd_corrected_matrix.csv")
+
+# PCA on corrected matrix
+# Remove rows with zero variance
+vsd_filtered <- vsd_corrected[apply(vsd_corrected, 1, var) != 0, ]
+
+pca_corrected <- prcomp(t(vsd_filtered), scale. = TRUE)
+pca_df_corrected <- as.data.frame(pca_corrected$x)
+pca_df_corrected$sample <- sub("^X", "", rownames(pca_df_corrected))
+
+# Add metadata
+pca_df_corrected <- pca_df_corrected %>%
+  left_join(sample_info_full %>% rownames_to_column("sample"), by = "sample")
+
+# Plot
+library(ggplot2)
+library(ggrepel)
+
+p_corrected <- ggplot(pca_df_corrected, aes(x = PC1, y = PC2, color = gc_content, shape = Age)) +
+  geom_point(size = 3) +
+  geom_text_repel(aes(label = sample), size = 3, max.overlaps = 50) +
+  scale_color_gradient(low = "blue", high = "red") +
+  labs(title = "PCA After Batch Correction (GC%, Duplication Rate)",
+       color = "% GC Content") +
+  theme_minimal()
+
+# Save plot
+png("PCA_Corrected.png", width = 800, height = 600)
+print(p_corrected)
+dev.off()
