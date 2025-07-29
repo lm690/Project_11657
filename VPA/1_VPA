@@ -1,0 +1,53 @@
+# Load required libraries
+library(variancePartition)
+library(limma)
+
+setwd("~/R/Chipmentation/VPA")
+
+sample_info_full<-read.csv("Pheno_final.csv", row.names = 1)
+vsd_matrix<-read.csv("vsd_normalized_matrix.csv", row.names=1)
+colnames(vsd_matrix) <- sub("^X", "", colnames(vsd_matrix))
+
+# Match column order and remove extra samples
+vsd_matrix <- vsd_matrix[, rownames(sample_info_full)]
+
+# Check alignment of sample names
+all(rownames(sample_info_full) == colnames(vsd_matrix))
+
+form <- ~ (1|Age) + (1|Treatment) + (1|Condition) + gc_content + dup_rate + total_reads + FRiP + Peak_Count + Mean_Peak_Width
+
+# Ensure matrix is numeric
+vsd_matrix <- as.matrix(vsd_matrix)
+
+# Match rows
+common_samples <- intersect(colnames(vsd_matrix), rownames(sample_info_full))
+
+vsd_matrix <- vsd_matrix[, common_samples]
+sample_info_sub <- sample_info_full[common_samples, ]
+
+# Identify numeric columns to scale
+numeric_cols <- sapply(sample_info_sub, is.numeric)
+
+# Scale only the numeric columns
+sample_info_scaled <- sample_info_sub
+sample_info_scaled[, numeric_cols] <- scale(sample_info_sub[, numeric_cols])
+
+# Run variance partitioning
+library(BiocParallel)
+param <- SnowParam(workers = 4, type = "SOCK", progressbar = TRUE)
+register(param)
+
+varPart <- fitExtractVarPartModel(
+  vsd_matrix,
+  formula = form,
+  data = sample_info_scaled
+)
+
+
+varPart <- fitExtractVarPartModel(vsd_matrix, formula = form, data = sample_info_scaled)
+save(varPart, file="varPart.Rdata")
+
+# Plot the results
+png("var_plot.png", width = 800, height = 600)
+plotVarPart(varPart)
+dev.off()
