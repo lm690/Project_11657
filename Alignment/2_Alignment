@@ -1,0 +1,31 @@
+#!/bin/bash
+#SBATCH --export=ALL #export all enviroment variables to the batch job
+#SBATCH -p mrcq #select partition
+#SBATCH --time=24:00:00 ##maximum wall time for the job
+#SBATCH -A Research_Project-MRC190311 #research project to submit under
+#SBATCH --nodes=1 #specify number of nodes
+#SBATCH --ntasks-per-node=16 # specify number of processors per node
+#SBATCH --mail-type=END # send email at job completion
+#SBATCH --error=WGCNA_%j.err # error file
+#SBATCH --output=WGCNA_%j.log # output file
+#SBATCH --job-name=Alignment_1
+
+source /lustre/home/lm690/miniconda3/etc/profile.d/conda.sh
+
+conda activate chipmentation
+
+FASTQ_DIR="/lustre/projects/Research_Project-T111004/Lachlan/Project_11657/X0050/11_fastp_trimmed"
+BAM_DIR="/lustre/projects/Research_Project-T111004/Lachlan/Project_11657/Alignment/BAM"
+INDEX="/lustre/projects/Research_Project-T111004/Lachlan/Project_11657/Index/mm39"
+GROUP_FILE="/lustre/projects/Research_Project-T111004/Lachlan/Project_11657/Alignment/sample_groups/group_1.txt"
+
+while read SAMPLE; do
+  FQ1="${FASTQ_DIR}/${SAMPLE}_R1_001_fastp.fastq.gz"
+  FQ2="${FASTQ_DIR}/${SAMPLE}_R2_001_fastp.fastq.gz"
+  BAM_OUT="${BAM_DIR}/${SAMPLE}.bam"
+
+  echo "Aligning ${SAMPLE}"
+  bowtie2 -x "$INDEX" -1 "$FQ1" -2 "$FQ2" | samtools view -bS - | samtools sort -o "$BAM_OUT"
+  samtools index "$BAM_OUT"
+
+done < "$GROUP_FILE"
