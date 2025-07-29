@@ -1,0 +1,93 @@
+#!/bin/bash
+#SBATCH --export=ALL
+#SBATCH -p mrcq
+#SBATCH --time=24:00:00
+#SBATCH -A Research_Project-MRC190311
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=16
+#SBATCH --mail-type=END
+#SBATCH --error=Metrics_%j.err
+#SBATCH --output=Metrics_%j.log
+#SBATCH --job-name=Metrics
+
+# Load conda environment
+source /lustre/home/lm1035/miniconda3/etc/profile.d/conda.sh
+conda activate chipmentation
+
+# Check for required tools
+command -v samtools >/dev/null || { echo "samtools not found"; exit 1; }
+command -v bedtools >/dev/null || { echo "bedtools not found"; exit 1; }
+
+# Set directories
+BAM_DIR="/lustre/projects/Research_Project-T111004/Lachlan/Project_11657/Filtering/Filtered"
+PEAK_DIR="/lustre/projects/Research_Project-T111004/Lachlan/Project_11657/Peak_Calling/Peaks"
+OUTFILE="chipseq_qc_summary.tsv"
+
+# Output file header
+echo -e "Sample\tFRiP\tPeak_Count\tMean_Peak_Width\tPileup_Avg\tPileup_Max\tNSC\tRSC" > "$OUTFILE"
+
+# Loop through BAMs
+for BAM in "$BAM_DIR"/*.filtered.bam; do
+  SAMPLE_BASE=$(basename "$BAM" .filtered.bam)
+  PEAKS="${PEAK_DIR}/${SAMPLE_BASE}.filtered_peaks.narrowPeak"
+  PILEUP="${PEAK_DIR}/${SAMPLE_BASE}.filtered_treat_pileup.bdg"
+
+  if [[ ! -f "$PEAKS" || ! -f "$PILEUP" ]]; then
+    echo "Skipping $SAMPLE_BASE: missing peak or pileup file" >&2
+    continue
+  fi
+
+  echo "Processing $SAMPLE_BASE..."
+
+  # Generate name-sorted BAM
+  NS_BAM="${SAMPLE_BASE}.name_sorted.bam"
+  samtools sort -n -@ 8 -o "$NS_BAM" "$BAM" 2>/dev/null
+
+  # Create BEDPE and fragment BED
+  bedtools bamtobed -bedpe -i "$NS_BAM" 2>/dev/null | \
+    awk '$1==$4 && $6!="."' | \
+    awk 'BEGIN{OFS="\t"}{print $1,$2,$6}' > "${SAMPLE_BASE}.fragments.bed"
+
+  READS_IN_PEAKS=$(bedtools intersect -a "${SAMPLE_BASE}.fragments.bed" -b "$PEAKS" 2>/dev/null | wc -l)
+  TOTAL_READS=$(samtools view -c -f 1 "$BAM" 2>/dev/null)
+  FRIP=$(echo "scale=4; $READS_IN_PEAKS / $TOTAL_READS" | bc)
+
+  # Peak count
+  PEAK_COUNT=$(wc -l < "$PEAKS")
+
+  # Mean peak width
+  MEAN_WIDTH=$(awk '{sum += ($3 - $2)} END {print int(sum/NR)}' "$PEAKS")
+
+  # Signal from pileup with safety for empty file
+  if [[ -s "$PILEUP" ]]; then
+    read PILEUP_AVG PILEUP_MAX <<< $(awk '{sum+=$4; if($4>max) max=$4} END {if(NR>0) print int(sum/NR), int(max); else print 0, 0}' "$PILEUP")
+  else
+    PILEUP_AVG=0
+    PILEUP_MAX=0
+  fi
+
+  # Generate tagAlign for NSC/RSC
+  bedtools bamtobed -bedpe -i "$NS_BAM" 2>/dev/null | \
+    awk '$1==$4 && $6!="."' | \
+    awk 'BEGIN{OFS="\t"}{print $1,$2,$6,".","1000","+"}' > "${SAMPLE_BASE}.tagAlign"
+
+  QC_OUT="${SAMPLE_BASE}_spp.qc"
+  Rscript run_spp.R -c="${SAMPLE_BASE}.tagAlign" -out="$QC_OUT" -savp
+
+  NSC="NA"
+  RSC="NA"
+  if [[ -f "$QC_OUT" ]]; then
+    NSC=$(awk 'NR==2 {print $7}' "$QC_OUT")
+    RSC=$(awk 'NR==2 {print $8}' "$QC_OUT")
+  else
+    echo "Warning: QC file not found for $SAMPLE_BASE" >&2
+  fi
+
+  # Append to summary table
+  echo -e "${SAMPLE_BASE}\t${FRIP}\t${PEAK_COUNT}\t${MEAN_WIDTH}\t${PILEUP_AVG}\t${PILEUP_MAX}\t${NSC}\t${RSC}" >> "$OUTFILE"
+
+  # Cleanup
+  rm -f "${SAMPLE_BASE}.fragments.bed" "${SAMPLE_BASE}.tagAlign" "$NS_BAM"
+done
+
+echo "QC summary saved to $OUTFILE"
