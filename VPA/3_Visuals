@@ -1,0 +1,132 @@
+library(ggplot2)
+library(dplyr)
+library(tidyverse)
+library(ggpubr)
+library(car)
+
+setwd("C:/Users/lm690/OneDrive - University of Exeter (1)/Documents/R/Chipmentation/VPA")
+
+vsd_matrix<-read.csv("vsd_normalized_matrix.csv", row.names=1)
+sample_info_full <- read.csv("Pheno_final.csv", row.names=1)
+
+vsd_matrix <- vsd_matrix[, !grepl("ASC2|AWC2", colnames(vsd_matrix))]
+
+# Remove rows (peaks) with zero variance
+vsd_matrix_filtered <- vsd_matrix[apply(vsd_matrix, 1, var) > 0, ]
+write.csv(vsd_matrix_filtered,file="vsd_filtered_matrix.csv")
+
+# Transpose and run PCA
+pca <- prcomp(t(vsd_matrix_filtered), scale. = TRUE)
+
+# Build PCA dataframe
+pca_df <- as.data.frame(pca$x)
+pca_df$sample <- sub("^X", "", rownames(pca_df))
+
+# Add metadata
+pca_df <- pca_df %>%
+  left_join(sample_info_full %>% rownames_to_column("sample"), by = "sample")
+rownames(pca_df) <- pca_df$sample
+
+# Combine PC1?PC5 and numeric/categorical phenotypes into one matrix
+cor_input <- pca_df %>%
+  select(PC1:PC5, dup_rate, gc_content, FRiP, Peak_Count, total_reads, Age, Treatment, Condition)
+
+# Convert factors/characters to numeric (e.g., Age = 0/1, Treatment = 0/1/2, etc.)
+cor_input[] <- lapply(cor_input, function(x) {
+  if (is.character(x) || is.factor(x)) as.numeric(factor(x)) else x
+})
+
+# Compute full correlation matrix
+cor_matrix <- cor(cor_input, use = "pairwise.complete.obs", method = "pearson")
+
+# Melt for plotting
+cor_melted <- reshape2::melt(cor_matrix, varnames = c("Var1", "Var2"), value.name = "Correlation")
+
+# Plot heatmap
+cor_plot <- ggplot(cor_melted, aes(x = Var1, y = Var2, fill = Correlation)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(
+    low = "blue", high = "red", mid = "white", midpoint = 0,
+    limits = c(-1, 1), na.value = "grey90"
+  ) +
+  theme_bw() +
+  labs(title = "Correlation Between PCs and Phenotypes", x = "", y = "") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Save it
+ggsave("Combined_PC_Pheno_Correlation.png", cor_plot, width = 10, height = 9)
+
+# Check for colinearity
+cor(cor_input[, c("gc_content", "dup_rate", "FRiP")])
+# < 0.7
+
+vif(lm(PC1 ~ gc_content + dup_rate + FRiP, data = cor_input))
+# > 2.5
+
+
+# Plot PCA: PC1 vs PC2, colored by GC content, shaped by Age
+plot <- ggplot(pca_df, aes(x = PC1, y = PC2, color = gc_content, shape = Age)) +
+  geom_point(size = 3) +
+  scale_color_gradient(low = "blue", high = "red") +
+  labs(title = "PCA: GC content vs Age", color = "% GC content") +
+  theme_minimal()
+
+png("GC_Age_PC.png", width = 800, height = 600)
+plot
+dev.off()
+
+# Look at age v. GC content directly
+plot <- ggboxplot(sample_info_full, x = "Age", y = "gc_content",
+          color = "Age", fill = "Age", palette = "jco",
+          add = "jitter", shape = "Age", 
+          title = "GC Content by Age Group") +
+  stat_compare_means(method = "wilcox.test", label = "p.signif") +  # p-value stars
+  theme_minimal()
+
+png("GC_Age.png", width = 800, height = 600)
+plot
+dev.off()
+
+# Sequencing depth v. peaks
+
+# Get sample names from the BAM files used in the script
+bam_dir <- "/lustre/projects/Research_Project-T111004/Lachlan/Project_11657/Filtering/Filtered"
+bam_files <- list.files(bam_dir, pattern = "\\.filtered\\.bam$", full.names = FALSE)
+
+# Strip extensions to get sample names
+sample_names <- sub("\\.filtered\\.bam$", "", bam_files)
+
+# Read the TSV without header (if it really doesn't have one)
+qc_summary <- read.delim("/lustre/projects/Research_Project-T111004/Lachlan/Project_11657/Peak_Calling/chipseq_qc_summary.tsv", header = TRUE)
+
+# Add the sample names as a new column
+qc_summary$Sample <- sample_names
+
+# Move Sample to the first column (optional)
+qc_summary <- qc_summary[, c(ncol(qc_summary), 1:(ncol(qc_summary)-1))]
+
+# Create named vector of peak counts from QC
+peak_counts <- setNames(qc_summary$Peak_Count, qc_summary$Sample)
+
+# Clean sample names (remove leading X)
+clean_names <- sub("^X", "", names(peak_counts))
+
+# Combine into a data frame
+qc_peaks_df <- data.frame(
+  sample = clean_names,
+  num_peaks = as.numeric(peak_counts),
+  total_reads = sample_info_full[clean_names, "total_reads"]
+)
+
+# Plot
+plot <- ggplot(qc_peaks_df, aes(x = total_reads, y = num_peaks)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  labs(title = "Total Reads vs Number of Detected Peaks",
+       x = "Total Reads", y = "Number of Peaks") +
+  theme_minimal()
+
+# Save plot
+png("Reads_Peaks.png", width = 800, height = 600)
+print(plot)
+dev.off()
