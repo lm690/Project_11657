@@ -1,0 +1,42 @@
+# Load required libraries
+library(tidyverse)
+library(DESeq2)
+
+setwd("/lustre/projects/Research_Project-T111004/Lachlan/Project_11657/4_Normalise")
+
+# Step 1: Load the raw count matrix
+counts <- read_csv("raw_count_matrix.csv")
+colnames(counts)[1] <- "peak"
+counts <- counts %>% column_to_rownames(var = "peak")
+
+# Step 2: Build sample metadata
+samples <- colnames(counts)
+
+# Parse sample names like 11657_YWC3_S166
+sample_info <- tibble(sample = samples) %>%
+  mutate(
+    Age = ifelse(str_detect(sample, "_Y"), "Young", "Aged"),
+    Treatment = case_when(
+      str_detect(sample, "_YW") | str_detect(sample, "_AW") ~ "WDR5",
+      str_detect(sample, "_YS") | str_detect(sample, "_AS") ~ "Saline",
+      TRUE ~ NA_character_
+    ),
+    Condition = case_when(
+      str_detect(sample, "C[0-9]+") ~ "CFC",
+      str_detect(sample, "B[0-9]+") ~ "Baseline",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  column_to_rownames("sample")
+
+# Step 3: Create DESeq2 object and run VST normalization
+dds <- DESeqDataSetFromMatrix(countData = counts,
+                              colData = sample_info,
+                              design = ~ Age + Treatment + Condition)
+
+dds <- estimateSizeFactors(dds)
+vsd <- vst(dds)
+
+# Step 4: Save normalized matrix
+vsd_matrix <- assay(vsd)
+write.csv(vsd_matrix, "vsd_normalized_matrix.csv")
