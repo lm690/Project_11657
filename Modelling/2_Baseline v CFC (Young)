@@ -1,0 +1,115 @@
+# Load required packages
+library(tidyverse)
+library(limma)
+
+# Set working directory
+setwd("C:/Users/lm690/OneDrive - University of Exeter (1)/Documents/R/Chipmentation/TSS_Promoters/Modelling")
+
+# Load corrected expression matrix
+vsd_corrected <- read.csv("C:\\Users\\lm690\\OneDrive - University of Exeter (1)\\Documents\\R\\Chipmentation\\TSS_Promoters\\Modelling\\vsd_promoter.csv", row.names = 1, check.names = FALSE)
+
+# Load sample metadata
+sample_info_full <- read.csv("C:/Users/lm690/OneDrive - University of Exeter (1)/Documents/R/Chipmentation/VPA/Pheno_final_2.csv", row.names = 1)
+
+# Subset to Young + Baseline only
+subset_meta <- sample_info_full %>%
+  filter(Age == "Young", Treatment == "Saline")
+
+# Subset expression matrix to matching samples
+vsd_subset <- vsd_corrected[, rownames(subset_meta)]
+
+# Design matrix for Condition comparison
+group <- factor(subset_meta$Condition)
+design <- model.matrix(~ group)
+
+# Fit the linear model
+fit <- lmFit(vsd_subset, design)
+fit <- eBayes(fit)
+
+# Extract results: Baseline vs CFC
+top_condition <- topTable(fit, coef = "groupCFC", number = Inf)
+
+# Save result table
+write.csv(top_condition, "DE_Condition_Young_Prom.csv")
+
+# Optional: print top few results
+print(head(top_condition))
+
+# Visualise
+library(ggplot2)
+library(dplyr)
+
+# 1
+top_condition <- top_condition %>%
+  mutate(
+    significant = P.Value < 0.05 & abs(logFC) > log2(2)
+  )
+
+plot <- ggplot(top_condition, aes(x = logFC, y = -log10(P.Value), color = significant)) +
+  geom_point(alpha = 0.6) +
+  scale_color_manual(values = c("gray", "red")) +
+  theme_minimal() +
+  labs(
+    title = "Volcano Plot (Nominal P < 0.05 & FC > 2)",
+    x = "log2 Fold Change",
+    y = "-log10(p-value)"
+  )
+
+png("Top_YCondition_Volcano_Prom.png", width = 800, height = 600)
+plot
+dev.off()
+
+# 2
+top_condition$logP <- -log10(top_condition$P.Val)
+
+plot <- ggplot(top_condition, aes(x = logFC, y = logP)) +
+  geom_point(alpha = 0.6) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "blue") +
+  theme_minimal() +
+  labs(
+    x = "log2 Fold Change (Young Baseline vs Young CFC)",
+    y = "-log10(unadjusted)",
+    title = "Volcano Plot (no FDR-significant features)"
+  )
+
+png("Top_YCondition_Volcano2_Prom.png", width = 800, height = 600)
+plot
+dev.off()
+
+# 3
+# Define thresholds
+fc_thresh <- log2(2)
+p_thresh <- 0.05
+
+# Add columns
+top_condition <- top_condition %>%
+  mutate(
+    significant = P.Value < p_thresh & abs(logFC) > fc_thresh,
+    logP = -log10(P.Value)
+  )
+
+# Base plot
+plot <- ggplot(top_condition, aes(x = logFC, y = logP)) +
+  geom_point(aes(color = significant), alpha = 0.6) +
+  scale_color_manual(values = c("gray", "red")) +
+  # Threshold lines
+  geom_hline(yintercept = -log10(p_thresh), linetype = "dashed", color = "red") +
+  geom_vline(xintercept = c(-fc_thresh, fc_thresh), linetype = "dashed", color = "blue") +
+  # Line annotations
+  annotate("text", x = max(top_condition$logFC, na.rm = TRUE), y = -log10(p_thresh) + 0.2,
+           label = "p = 0.05", hjust = 1, vjust = -0.5, color = "red", size = 3) +
+  annotate("text", x = c(-fc_thresh, fc_thresh), y = 0,
+           label = c("-log2(2)", "log2(2)"), vjust = -1, color = "blue", size = 3) +
+  # Aesthetics
+  theme_minimal() +
+  labs(
+    title = "Volcano Plot: Nominal p < 0.05 & |log2FC| > 2",
+    x = "log2 Fold Change (Young vs Adult)",
+    y = "-log10(p-value)"
+  ) +
+  theme(legend.position = "none")
+
+png("Top_YCondition_Volcano3_Prom.png", width = 800, height = 600)
+plot
+dev.off()
