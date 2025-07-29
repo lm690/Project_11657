@@ -1,0 +1,102 @@
+# Load required packages
+library(tidyverse)
+library(limma)
+
+# Set working directory
+setwd("C:/Users/lm690/OneDrive - University of Exeter (1)/Documents/R/Chipmentation/TSS_Promoters/Modelling")
+
+# Load corrected expression matrix
+vsd_corrected <- read.csv("C:\\Users\\lm690\\OneDrive - University of Exeter (1)\\Documents\\R\\Chipmentation\\TSS_Promoters\\Modelling\\vsd_promoter.csv", row.names = 1, check.names = FALSE)
+
+# Load sample metadata
+sample_info_full <- read.csv("C:/Users/lm690/OneDrive - University of Exeter (1)/Documents/R/Chipmentation/VPA/Pheno_final_2.csv", row.names = 1)
+sample_info_full$Age <- factor(sample_info_full$Age, levels = c("Young", "Aged"))
+
+# Subset to Saline only
+subset_meta <- sample_info_full %>%
+  filter(Age == "Aged")
+
+# Subset expression matrix to matching samples
+vsd_subset <- vsd_corrected[, rownames(subset_meta)]
+
+# Design matrix for Condition comparison
+treatment <- factor(subset_meta$Treatment)
+condition <- factor(subset_meta$Condition)
+design <- model.matrix(~ condition * treatment)
+
+# Fit the linear model
+fit <- lmFit(vsd_subset, design)
+fit <- eBayes(fit)
+
+# Extract each effect
+tt_treatment <- topTable(fit, coef = "treatmentWDR5", number = Inf, sort.by = "none")
+tt_condition <- topTable(fit, coef = "conditionCFC", number = Inf, sort.by = "none")
+tt_interaction <- topTable(fit, coef = "conditionCFC:treatmentWDR5", number = Inf, sort.by = "none")
+
+# Combine into one data frame
+combined <- data.frame(
+  gene = rownames(tt_treatment),
+  
+  logFC_Treatment = tt_treatment$logFC,
+  P_Treatment = tt_treatment$P.Value,
+  FDR_Treatment = tt_treatment$adj.P.Val,
+  
+  logFC_Condition = tt_condition$logFC,
+  P_Condition = tt_condition$P.Value,
+  FDR_Condition = tt_condition$adj.P.Val,
+  
+  logFC_Interaction = tt_interaction$logFC,
+  P_Interaction = tt_interaction$P.Value,
+  FDR_Interaction = tt_interaction$adj.P.Val
+)
+
+# Move gene name to rownames
+rownames(combined) <- combined$gene
+combined$gene <- NULL
+
+# Save result table
+write.csv(combined, "DE_Interact_CFCWDR5_Prom.csv")
+
+# Optional: print top few results
+print(head(combined))
+
+# Visualise
+library(ggplot2)
+library(dplyr)
+
+# Interaction
+# Define thresholds
+fc_thresh <- log2(2)
+p_thresh <- 0.05
+
+# Add columns
+interaction <- combined %>%
+  mutate(
+    significant = P_Interaction < p_thresh & abs(logFC_Interaction) > fc_thresh,
+    logP = -log10(P_Interaction)
+  )
+
+# Base plot
+plot <- ggplot(interaction, aes(x = logFC_Interaction, y = logP)) +
+  geom_point(aes(color = significant), alpha = 0.6) +
+  scale_color_manual(values = c("gray", "red")) +
+  # Threshold lines
+  geom_hline(yintercept = -log10(p_thresh), linetype = "dashed", color = "red") +
+  geom_vline(xintercept = c(-fc_thresh, fc_thresh), linetype = "dashed", color = "blue") +
+  # Line annotations
+  annotate("text", x = max(interaction$logFC_Interaction, na.rm = TRUE), y = -log10(p_thresh) + 0.2,
+           label = "p = 0.05", hjust = 1, vjust = -0.5, color = "red", size = 3) +
+  annotate("text", x = c(-fc_thresh, fc_thresh), y = 0,
+           label = c("-log2(2)", "log2(2)"), vjust = -1, color = "blue", size = 3) +
+  # Aesthetics
+  theme_minimal() +
+  labs(
+    title = "Volcano Plot: Nominal p < 0.05 & |log2FC| > 2",
+    x = "log2 Fold Change (Young vs Adult)",
+    y = "-log10(p-value)"
+  ) +
+  theme(legend.position = "none")
+
+png("Top_CFC_WDR5_Interaction_Volcano_Prom.png", width = 800, height = 600)
+plot
+dev.off()
