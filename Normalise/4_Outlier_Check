@@ -1,0 +1,57 @@
+# Load required libraries
+library(tidyverse)
+library(ggplot2)
+
+setwd("/lustre/projects/Research_Project-T111004/Lachlan/Project_11657/4_Normalise")
+
+# === Step 1: Load and clean data ===
+vsd_matrix <- read.csv("vsd_normalized_matrix.csv", row.names = 1)
+
+# Remove constant peaks (zero variance)
+vsd_filtered <- vsd_matrix[apply(vsd_matrix, 1, var) > 0, ]
+
+# === Step 2: PCA ===
+vsd_pca <- prcomp(t(vsd_filtered), scale. = TRUE)
+pca_scores <- as.data.frame(vsd_pca$x)
+pca_scores$sample <- rownames(pca_scores)
+
+# === Step 3: Hierarchical clustering ===
+dist_matrix <- dist(t(vsd_filtered))
+hc <- hclust(dist_matrix)
+
+# Save dendrogram plot
+png("sample_dendrogram.png", width = 800, height = 600)
+plot(hc, main = "Hierarchical Clustering of Samples", xlab = "", sub = "")
+dev.off()
+
+# === Step 4: Compute distances in PCA space ===
+num_pcs <- 5
+pc_subset <- pca_scores[, 1:num_pcs]
+centroid <- colMeans(pc_subset)
+dists <- apply(pc_subset, 1, function(x) sqrt(sum((x - centroid)^2)))
+z_scores <- scale(dists)
+
+pca_scores$distance <- as.numeric(dists)
+pca_scores$z_score <- as.numeric(z_scores)
+pca_scores$outlier <- abs(pca_scores$z_score) > 2
+
+# === Step 5: Save outlier info ===
+outliers <- pca_scores %>% filter(outlier == TRUE)
+write.csv(outliers, "flagged_outliers.csv", row.names = FALSE)
+
+# === Step 6: PCA plot with outliers ===
+pca_plot <- ggplot(pca_scores, aes(x = PC1, y = PC2, color = outlier, label = sample)) +
+  geom_point(size = 3) +
+  geom_text(data = subset(pca_scores, outlier == TRUE),
+            vjust = -1.1, hjust = 1.1, size = 3) +
+  scale_color_manual(values = c("black", "red")) +
+  theme_bw() +
+  labs(title = "Outlier Detection via PCA",
+       color = "Outlier")
+
+ggsave("pca_outlier_plot.png", pca_plot, width = 8, height = 6, dpi = 300)
+
+cat("? Outlier detection complete.\n")
+cat("?? Outliers saved to: flagged_outliers.csv\n")
+cat("?? PCA plot saved as: pca_outlier_plot.png\n")
+cat("?? Dendrogram saved as: sample_dendrogram.png\n")
