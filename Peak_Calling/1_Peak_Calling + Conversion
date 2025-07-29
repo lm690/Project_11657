@@ -1,0 +1,55 @@
+#!/bin/bash
+#SBATCH --export=ALL
+#SBATCH -p mrcq
+#SBATCH --time=24:00:00
+#SBATCH -A Research_Project-MRC190311
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=16
+#SBATCH --mail-type=END
+#SBATCH --error=Peak_%j.err
+#SBATCH --output=Peak_%j.log
+#SBATCH --job-name=Peak_Calling
+
+source /lustre/home/lm690/miniconda3/etc/profile.d/conda.sh
+conda activate chipmentation
+
+PEAK_DIR="/lustre/projects/Research_Project-T111004/Lachlan/Project_11657/Peak_Calling/Peaks"
+BAM_DIR="/lustre/projects/Research_Project-T111004/Lachlan/Project_11657/Filtering/Filtered"
+CHROM_SIZES="/lustre/projects/Research_Project-T111004/Lachlan/Project_11657/Peak_Calling/mm39.chrom.sizes"
+
+cd "$PEAK_DIR"
+
+# Loop over BAMs
+for bam in "$BAM_DIR"/*.bam; do
+  sample=$(basename "$bam" .bam)
+
+  echo "Running MACS3 for $sample (PE mode)"
+
+  macs3 callpeak \
+    -t "$bam" \
+    --name "$sample" \
+    --outdir "$PEAK_DIR" \
+    --format BAMPE \
+    --gsize mm \
+    --bdg \
+    --SPMR \
+    --nolambda \
+    --qvalue 0.05
+done
+
+# Generate BigWig from *_treat_pileup.bdg
+for bdg in *_treat_pileup.bdg; do
+  [ -f "$bdg" ] || continue
+
+  sample=$(basename "$bdg" _treat_pileup.bdg)
+  sorted_bdg="${sample}.sorted.bdg"
+  bw="${sample}.bw"
+
+  echo "Creating BigWig for $sample"
+
+  sort -k1,1 -k2,2n "$bdg" > "$sorted_bdg"
+  bedGraphToBigWig "$sorted_bdg" "$CHROM_SIZES" "$bw"
+  rm "$sorted_bdg"
+done
+
+echo "Done! Peaks called and .bw files generated."
