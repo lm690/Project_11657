@@ -1,0 +1,58 @@
+# Load libraries
+library(GenomicRanges)
+library(ChIPseeker)
+library(TxDb.Mmusculus.UCSC.mm39.knownGene)
+library(org.Mm.eg.db)
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(ComplexHeatmap)
+library(readr)
+library(scales)
+library(circlize)
+
+# Set working directory
+setwd("C:/Users/lm690/OneDrive - University of Exeter (1)/Documents/R/Chipmentation/TSS_Promoters/Model_Plots")
+
+# Load annotated data
+vsd_annotated <- read.csv("vsd_promoter_annotated.csv", check.names = FALSE)
+
+# Get top peaks
+top_cfc <- read.csv("C:/Users/lm690/OneDrive - University of Exeter (1)/Documents/R/Chipmentation/TSS_Promoters/Modelling/DE_Condition_Aged_Prom.csv", row.names = 1)
+
+top_filtered <- top_cfc %>%
+  filter(abs(logFC) > log2(2)) %>%
+  arrange(P.Value)
+
+top_100_peaks <- rownames(top_filtered)[1:min(100, nrow(top_filtered))]
+
+
+vsd_top100 <- vsd_annotated %>%
+  filter(region %in% top_100_peaks, !is.na(SYMBOL))
+
+selected_cols <- grep("ASB[1-3]|ASC[1-3]", colnames(vsd_top100), value = TRUE)
+
+# Create expression matrix
+expr_mat <- vsd_top100 %>%
+  dplyr::select(SYMBOL, all_of(selected_cols)) %>%
+  group_by(SYMBOL) %>%
+  summarise(across(everything(), mean), .groups = "drop")
+
+heatmap_mat <- as.matrix(expr_mat[, -1])
+rownames(heatmap_mat) <- expr_mat$SYMBOL
+
+# Z-score normalize by gene
+heatmap_mat <- t(scale(t(heatmap_mat)))
+
+# Plot heatmap with clustering
+png("TopGenes_ComplexHeatmap_ACFC.png", width = 1400, height = 1600, res = 150)
+Heatmap(heatmap_mat,
+        name = "Z-score",
+        cluster_rows = TRUE,
+        cluster_columns = TRUE,
+        show_row_names = TRUE,
+        show_column_names = TRUE,
+        column_names_rot = 45,
+        heatmap_legend_param = list(title = "Expression"),
+        row_names_gp = gpar(fontsize = 8))
+dev.off()
