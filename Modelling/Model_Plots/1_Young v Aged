@@ -1,0 +1,110 @@
+# Load libraries
+library(GenomicRanges)
+library(ChIPseeker)
+library(TxDb.Mmusculus.UCSC.mm39.knownGene)
+library(org.Mm.eg.db)
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(ComplexHeatmap)
+library(readr)
+library(scales)
+library(circlize)
+
+# Set working directory
+setwd("C:/Users/lm690/OneDrive - University of Exeter (1)/Documents/R/Chipmentation/TSS_Promoters/Model_Plots")
+
+# Load corrected values
+vsd_corrected <- read.csv("C:\\Users\\lm690\\OneDrive - University of Exeter (1)\\Documents\\R\\Chipmentation\\TSS_Promoters\\Modelling\\vsd_promoter.csv", row.names = 1, check.names = FALSE)
+
+# Parse peak coordinates from rownames
+parts <- strsplit(rownames(vsd_corrected), "_")
+valid_rows <- lengths(parts) == 3
+vsd_clean <- vsd_corrected[valid_rows, ]
+parts_clean <- parts[valid_rows]
+
+coords_df <- do.call(rbind, parts_clean)
+colnames(coords_df) <- c("chr", "start", "end")
+
+# Create GRanges object
+peak_gr <- GRanges(
+  seqnames = coords_df[, "chr"],
+  ranges = IRanges(start = as.numeric(coords_df[, "start"]),
+                   end = as.numeric(coords_df[, "end"]))
+)
+
+# Annotate peaks
+txdb <- TxDb.Mmusculus.UCSC.mm39.knownGene
+peak_annot <- annotatePeak(peak_gr, TxDb = txdb, tssRegion = c(-3000, 3000), verbose = FALSE)
+annot_df <- as.data.frame(peak_annot)
+
+# Create region ID for merging
+annot_df$region <- paste0(annot_df$seqnames, "_", annot_df$start, "_", annot_df$end)
+
+# Map Entrez IDs to gene symbols
+gene_symbols <- AnnotationDbi::select(
+  org.Mm.eg.db,
+  keys = annot_df$geneId,
+  columns = c("SYMBOL"),
+  keytype = "ENTREZID"
+)
+
+gene_symbols <- gene_symbols[!duplicated(gene_symbols$ENTREZID), ]
+
+# Merge SYMBOLs into annotation
+annot_df <- left_join(annot_df, gene_symbols, by = c("geneId" = "ENTREZID"))
+
+# Add region names to expression matrix
+vsd_clean$region <- rownames(vsd_clean)
+
+# Merge expression values with annotation
+vsd_annotated <- left_join(vsd_clean, annot_df[, c("region", "SYMBOL")], by = "region")
+
+# Move SYMBOL to first column for clarity
+vsd_annotated <- vsd_annotated %>%
+  relocate(SYMBOL, .before = everything())
+
+rownames(vsd_annotated) <- vsd_annotated$region
+
+# Save to file
+write.csv(vsd_annotated, "vsd_promoter_annotated.csv", row.names = FALSE)
+
+
+# Get top peaks
+top_age <- read.csv("C:/Users/lm690/OneDrive - University of Exeter (1)/Documents/R/Chipmentation/TSS_Promoters/Modelling/DE_Age_Adult_vs_Young_SalineBaseline_Prom.csv", row.names = 1)
+
+top_filtered <- top_age %>%
+  filter(abs(logFC) > log2(2)) %>%
+  arrange(P.Value)
+
+top_100_peaks <- rownames(top_filtered)[1:min(100, nrow(top_filtered))]
+
+vsd_top100 <- vsd_annotated %>%
+  filter(region %in% top_100_peaks, !is.na(SYMBOL))
+
+selected_cols <- grep("YSB[1-3]|ASB[1-3]", colnames(vsd_top100), value = TRUE)
+
+# Create expression matrix
+expr_mat <- vsd_top100 %>%
+  dplyr::select(SYMBOL, all_of(selected_cols)) %>%
+  group_by(SYMBOL) %>%
+  summarise(across(everything(), mean), .groups = "drop")
+
+heatmap_mat <- as.matrix(expr_mat[, -1])
+rownames(heatmap_mat) <- expr_mat$SYMBOL
+
+# Z-score normalize by gene
+heatmap_mat <- t(scale(t(heatmap_mat)))
+
+# Plot heatmap with clustering
+png("TopGenes_ComplexHeatmap_Age.png", width = 1400, height = 1600, res = 150)
+Heatmap(heatmap_mat,
+        name = "Z-score",
+        cluster_rows = TRUE,
+        cluster_columns = TRUE,
+        show_row_names = TRUE,
+        show_column_names = TRUE,
+        column_names_rot = 45,
+        heatmap_legend_param = list(title = "Expression"),
+        row_names_gp = gpar(fontsize = 8))
+dev.off()
