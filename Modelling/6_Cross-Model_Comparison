@@ -1,0 +1,117 @@
+library(ggVennDiagram)
+
+setwd("~/R/Chipmentation/TSS_Promoters/Annotation/Comparison")
+
+# Load top results
+Age <- read.csv("~/R/Chipmentation/TSS_Promoters/Annotation/Age/Age_Top_Final.csv")
+YCFC <- read.csv("~/R/Chipmentation/TSS_Promoters/Annotation/CFCvB_Young_Prom/BvCFC_Y_promoterpeaks_Prom.csv")
+ACFC <- read.csv("~/R/Chipmentation/TSS_Promoters/Annotation/CFCvB_Aged_Prom/BvCFC_A_promoterpeaks_Prom.csv")
+Interaction <- read.csv("~/R/Chipmentation/TSS_Promoters/Annotation/Interaction_Age_Condition/Interaction_AgeCondition_promoterpeaks_Prom.csv")
+
+# Pull symbols
+genes_age <- Age$SYMBOL
+genes_cfc_young <- YCFC$SYMBOL
+genes_cfc_aged <- ACFC$SYMBOL
+genes_interaction <- Interaction$SYMBOL
+
+# Create Venn diagram
+venn_list <- list(
+  Age         = genes_age,
+  Young_CFC   = genes_cfc_young,
+  Aged_CFC    = genes_cfc_aged,
+  Interaction = genes_interaction
+)
+
+# Plot with custom pastel/high-contrast colors
+plot <- ggVennDiagram(venn_list, label_alpha = 0, label = "count") +
+  scale_fill_gradientn(colors = c(
+    "#FFF5EB",  # very light peach
+    "#FDBE85",  # light orange
+    "#FD8D3C",  # medium orange
+    "#E6550D",  # strong orange
+    "#A63603"   # dark brown
+  )) +
+  ggtitle("Venn Diagram of DE Genes") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+png("Overlap_Venn.png", width = 800, height = 600)
+plot
+dev.off()
+
+# Directionality analysis
+Age$log2FoldChange <- Age$logFC
+YCFC$log2FoldChange <- YCFC$logFC
+ACFC$log2FoldChange <- ACFC$logFC
+Interaction$log2FoldChange <- Interaction$logFC_Interaction
+
+# Merge based on SYMBOL
+merged_age_interact <- merge(
+  Age[, c("SYMBOL", "log2FoldChange")],
+  Interaction[, c("SYMBOL", "log2FoldChange")],
+  by = "SYMBOL",
+  suffixes = c("_age", "_interact")
+)
+
+# Direction agreement
+merged_age_interact$sign_agree <- sign(merged_age_interact$log2FoldChange_age) ==
+  sign(merged_age_interact$log2FoldChange_interact)
+
+# View agreement summary
+table(merged_age_interact$sign_agree)
+
+# Optional: binomial test
+binom.test(sum(merged_age_interact$sign_agree), nrow(merged_age_interact), p = 0.5)
+
+# Young vs Interaction
+merged_ycfc_interact <- merge(
+  YCFC[, c("SYMBOL", "log2FoldChange")],
+  Interaction[, c("SYMBOL", "log2FoldChange")],
+  by = "SYMBOL",
+  suffixes = c("_ycfc", "_interact")
+)
+
+table(sign(merged_ycfc_interact$log2FoldChange_ycfc) == sign(merged_ycfc_interact$log2FoldChange_interact))
+binom.test(
+  sum(sign(merged_ycfc_interact$log2FoldChange_ycfc) == sign(merged_ycfc_interact$log2FoldChange_interact)),
+  nrow(merged_ycfc_interact),
+  p = 0.5
+)
+
+# Aged vs Interaction
+merged_acfc_interact <- merge(
+  ACFC[, c("SYMBOL", "log2FoldChange")],
+  Interaction[, c("SYMBOL", "log2FoldChange")],
+  by = "SYMBOL",
+  suffixes = c("_acfc", "_interact")
+)
+
+table(sign(merged_acfc_interact$log2FoldChange_acfc) == sign(merged_acfc_interact$log2FoldChange_interact))
+binom.test(
+  sum(sign(merged_acfc_interact$log2FoldChange_acfc) == sign(merged_acfc_interact$log2FoldChange_interact)),
+  nrow(merged_acfc_interact),
+  p = 0.5
+)
+
+# Barplot
+df <- data.frame(
+  Comparison = c("Age vs Interaction", "Young CFC vs Interaction", "Aged CFC vs Interaction"),
+  Concordant = c(149, 209, 2556),
+  Total = c(995, 974, 2914)
+)
+
+df$Proportion <- df$Concordant / df$Total
+
+plot <- ggplot(df, aes(x = Comparison, y = Proportion, fill = Comparison)) +
+  geom_bar(stat = "identity", color = "black") +
+  geom_text(aes(label = scales::percent(Proportion, accuracy = 0.1)),
+            vjust = -0.5, size = 4) +
+  ylim(0, 1) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Directionality Agreement with Interaction Model",
+       y = "Proportion of Concordant Genes") +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "none")
+
+png("Overlap_Barplot.png", width = 800, height = 600)
+plot
+dev.off()
