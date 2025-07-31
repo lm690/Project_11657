@@ -1,0 +1,349 @@
+# Load required packages
+library(GenomicRanges)
+library(ChIPseeker)
+library(rGREAT)
+library(TxDb.Mmusculus.UCSC.mm39.knownGene)
+library(org.Mm.eg.db)
+library(ggplot2)
+library(rtracklayer)
+library(R.utils)
+library(patchwork)
+library(dplyr)
+library(tidyr)
+
+# Set working directory
+setwd("C:/Users/lm690/OneDrive - University of Exeter (1)/Documents/R/Chipmentation/TSS_Promoters/Annotation/Age")
+
+# Age
+top_age <- read.csv("C:/Users/lm690/OneDrive - University of Exeter (1)/Documents/R/Chipmentation/TSS_Promoters/Modelling/DE_Age_Adult_vs_Young_SalineBaseline_Prom.csv", row.names = 1)
+
+# Split rownames into chr/start/end
+top_peaks <- rownames(top_age[top_age$P.Value < 0.05 & abs(top_age$logFC) > log2(2), ])
+peak_df <- do.call(rbind, strsplit(top_peaks, "_"))
+colnames(peak_df) <- c("chr", "start", "end")
+peak_gr <- GRanges(
+  seqnames = peak_df[, "chr"],
+  ranges = IRanges(start = as.numeric(peak_df[, "start"]),
+                   end = as.numeric(peak_df[, "end"]))
+)
+
+
+# ChIPseeker
+txdb <- TxDb.Mmusculus.UCSC.mm39.knownGene
+
+peakAnno <- annotatePeak(peak_gr, TxDb = txdb, tssRegion = c(-3000, 3000), verbose = FALSE)
+
+# View annotation summary
+png("Age_AnnoPie_Prom.png", width = 800, height = 600)
+plotAnnoPie(peakAnno)
+dev.off()
+
+png("Age_AnnoBar_Prom.png", width = 800, height = 600)
+plotAnnoBar(peakAnno)
+dev.off()
+
+# Extract distances
+tss_distances <- as.data.frame(peakAnno)$distanceToTSS
+
+df <- data.frame(dist = tss_distances)
+
+plot <- ggplot(df, aes(x = dist)) +
+  geom_histogram(binwidth = 150, fill = "steelblue", color = "white") +
+  theme_minimal() +
+  labs(
+    title = "Distance to TSS",
+    x = "Distance to TSS (bp)",
+    y = "Peak Count"
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red")
+
+png("Age_Dist_Prom.png", width = 800, height = 600)
+plot
+dev.off()
+
+# Zoom
+plot <- ggplot(df, aes(x = dist)) +
+  geom_histogram(binwidth = 200, fill = "steelblue", color = "white") +
+  theme_minimal() +
+  labs(
+    title = "Peak Distribution Around TSS (±10kb)",
+    x = "Distance to TSS (bp)",
+    y = "Peak Count"
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  coord_cartesian(xlim = c(-5000, 5000))
+
+png("Age_Dist_Zoom_Prom.png", width = 800, height = 600)
+plot
+dev.off()
+
+# rGREAT
+# Further filtering
+# Filter top_age first
+top_filtered <- top_age %>%
+  filter(P.Value < 0.05, abs(logFC) > log2(2))  # or 1.5, up to you
+
+# Get GRanges
+peak_ids <- rownames(top_filtered)
+coords <- do.call(rbind, strsplit(peak_ids, "_"))
+colnames(coords) <- c("chr", "start", "end")
+filtered_gr <- GenomicRanges::GRanges(
+  seqnames = coords[, "chr"],
+  ranges = IRanges::IRanges(start = as.numeric(coords[, "start"]),
+                            end = as.numeric(coords[, "end"]))
+)
+
+# Add TSS proximity filter
+anno_df <- as.data.frame(annotatePeak(filtered_gr, TxDb = txdb, tssRegion = c(-3000, 3000)))
+filtered_gr <- filtered_gr[abs(anno_df$distanceToTSS) < 3000]  # Only ±3kb TSS
+
+# Load chain
+chain <- import.chain("C:/Users/lm690/OneDrive - University of Exeter (1)/Documents/R/Chipmentation/Annotation/mm39ToMm10.over.chain")
+
+# LiftOver
+filtered_gr_lifted <- liftOver(filtered_gr, chain)
+filtered_gr_lifted <- unlist(filtered_gr_lifted) # Flatten result
+
+# Remove peaks that didn’t map cleanly
+filtered_gr_lifted <- keepStandardChromosomes(filtered_gr_lifted, pruning.mode = "coarse")
+
+# Submit regions to GREAT
+job <- submitGreatJob(filtered_gr_lifted, species = "mm10")
+
+# Get GO and pathway enrichment
+go <- getEnrichmentTables(job)
+
+# Example: top GO Biological Process
+View(go$`GO Biological Process`)
+write.csv(go$`GO Biological Process`, "Age_GREAT_GO_BP_Prom.csv", row.names = FALSE)
+write.csv(go$`GO Molecular Function`, "Age_GREAT_GO_MF_Prom.csv", row.names = FALSE)
+write.csv(go$`GO Cellular Component`, "Age_GREAT_GO_CC_Prom.csv", row.names = FALSE)
+
+# LADs check
+cLADs_mm9 <- import("GSE17051_cLAD_regions.bed")
+
+chain <- import.chain("C:/Users/lm690/OneDrive - University of Exeter (1)/Documents/R/Chipmentation/Annotation/mm9ToMm10.over.chain")
+
+cLADs_mm10 <- unlist(liftOver(cLADs_mm9, chain))
+
+cLADs_mm10 <- keepStandardChromosomes(cLADs_mm10, pruning.mode = "coarse")
+
+# Recreate 'parts' to be sure
+parts <- strsplit(rownames(top_age), "_")
+
+# Keep only entries that split into exactly 3 parts
+valid_rows <- lengths(parts) == 3
+top_age_clean <- top_age[valid_rows, ]
+parts_clean <- parts[valid_rows]
+
+# Convert to matrix
+peak_coords <- do.call(rbind, parts_clean)
+colnames(peak_coords) <- c("chr", "start", "end")
+
+# Create GRanges
+top_gr <- GRanges(
+  seqnames = peak_coords[, "chr"],
+  ranges = IRanges(
+    start = as.numeric(peak_coords[, "start"]),
+    end = as.numeric(peak_coords[, "end"])
+  )
+)
+
+# Check problematic rows
+bad_rows <- rownames(top_age)[lengths(parts) != 3]
+head(bad_rows, 10)
+
+# Check LAD status
+top_age_clean$in_cLAD <- overlapsAny(top_gr, cLADs_mm10)
+
+# Proportion of significant genes
+# Filter to only significant genes
+sig_genes <- top_age_clean %>%
+  filter(P.Value < 0.05)
+
+# Filter to significant genes and summarize
+sig_summary <- top_age_clean %>%
+  filter(P.Value < 0.05) %>%
+  count(in_cLAD) %>%
+  mutate(prop = n / sum(n),
+         label = scales::percent(prop, accuracy = 0.1))
+
+# Plot the proportion
+plot <- ggplot(sig_summary, aes(x = "", y = prop, fill = in_cLAD)) +
+  geom_col(width = 1) +
+  coord_polar(theta = "y") +
+  geom_text(aes(label = label), position = position_stack(vjust = 0.5), size = 5) +
+  labs(title = "Proportion of Significant Genes in cLADs", fill = "In cLAD") +
+  theme_void()
+
+png("LAD_Proportion_Prom.png", width = 800, height = 600)
+plot
+dev.off()
+
+# LAD direction
+# Categorize direction and summarize
+sig_direction_summary <- top_age_clean %>%
+  filter(P.Value < 0.05) %>%
+  mutate(direction = ifelse(logFC > 0, "Upregulated", "Downregulated")) %>%
+  count(in_cLAD, direction) %>%
+  group_by(in_cLAD) %>%
+  mutate(prop = n / sum(n),
+         label = scales::percent(prop, accuracy = 0.1))
+
+# Stacked bar plot with % labels
+plot <- ggplot(sig_direction_summary, aes(x = in_cLAD, y = prop, fill = direction)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = label), position = position_stack(vjust = 0.5), size = 4) +
+  scale_y_continuous(labels = scales::percent_format(), expand = expansion(mult = c(0, 0.05))) +
+  labs(title = "Direction of Significant Gene Expression by cLAD Status",
+       x = "In cLAD", y = "Proportion of Significant Genes", fill = "Direction") +
+  theme_minimal()
+
+png("LAD_Direction_Prom.png", width = 800, height = 600)
+plot
+dev.off()
+
+# Dual bar chart
+# Convert annotated peaks to data frame
+peak_anno_df <- as.data.frame(peakAnno)
+
+# Add region string for joining
+peak_anno_df$region <- paste0(peak_anno_df$seqnames, "_",
+                              peak_anno_df$start, "_",
+                              peak_anno_df$end)
+
+# Convert Entrez IDs to gene symbols
+gene_symbols <- AnnotationDbi::select(
+  org.Mm.eg.db,
+  keys = peak_anno_df$geneId,
+  columns = c("SYMBOL"),
+  keytype = "ENTREZID"
+)
+
+# Some Entrez IDs may map to multiple symbols — keep only the first match per ID
+gene_symbols <- gene_symbols[!duplicated(gene_symbols$ENTREZID), ]
+
+# Join back to peak_anno_df
+peak_anno_df <- left_join(peak_anno_df, gene_symbols,
+                          by = c("geneId" = "ENTREZID"))
+
+# Add region to original table
+top_age_clean$region <- rownames(top_age_clean)
+
+# Merge with annotation
+top_annotated <- left_join(top_age_clean, peak_anno_df[, c("region", "SYMBOL")], by = "region")
+
+top_lad_genes <- top_annotated %>%
+  filter(P.Value < 0.05, in_cLAD == TRUE, !is.na(SYMBOL)) %>%
+  arrange(desc(abs(logFC))) %>%
+  slice_head(n = 20)
+
+p1 <- ggplot(top_lad_genes, aes(x = reorder(SYMBOL, logFC), y = logFC, fill = logFC > 0)) +
+  geom_col() +
+  coord_flip() +
+  theme_minimal() +
+  scale_fill_manual(values = c("TRUE" = "firebrick", "FALSE" = "steelblue"),
+                    labels = c("Down", "Up")) +
+  labs(title = "Top 20 Significant LAD Genes by Fold Change",
+       x = "Gene Symbol", y = "log2 Fold Change",
+       fill = "Direction")
+
+# Direction summary
+lad_summary <- top_annotated %>%
+  filter(P.Value < 0.05, in_cLAD == TRUE) %>%
+  summarise(
+    total = n(),
+    downregulated = sum(logFC < 0),
+    upregulated = sum(logFC > 0)
+  )
+print(lad_summary)
+
+lad_direction <- lad_summary %>%
+  pivot_longer(cols = c(downregulated, upregulated), names_to = "Direction", values_to = "Count") %>%
+  mutate(Percent = round(100 * Count / total, 1))
+
+p2 <- ggplot(lad_direction, aes(x = Direction, y = Count, fill = Direction)) +
+  geom_col() +
+  geom_text(aes(label = paste0(Percent, "%")), vjust = -0.5) +
+  scale_fill_manual(values = c("downregulated" = "steelblue", "upregulated" = "firebrick")) +
+  theme_minimal() +
+  labs(
+    title = "Direction of Change for Significant LAD-Associated Peaks",
+    x = "", y = "Number of Peaks"
+  )
+
+# Combine the plots
+combined_plot <- p1 + p2 + plot_layout(ncol = 2)
+
+# Save as PNG
+ggsave("lad_gene_direction_summary_Prom.png", combined_plot, width = 14, height = 6, dpi = 300)
+
+# Save clean results
+write.csv(top_age_clean, file="top_age_clean_Prom.csv")
+
+# GO enrichment
+library(clusterProfiler)
+library(org.Mm.eg.db)
+
+# Filter for significant promoter-associated genes with gene symbols
+go_genes <- top_annotated %>%
+  filter(P.Value < 0.05, !is.na(SYMBOL)) %>%
+  pull(SYMBOL) %>%
+  unique()
+
+# GO enrichment (Biological Processes)
+ego <- enrichGO(
+  gene          = go_genes,
+  OrgDb         = org.Mm.eg.db,
+  keyType       = "SYMBOL",
+  ont           = "BP",
+  pAdjustMethod = "BH",
+  qvalueCutoff  = 0.1,
+  readable      = TRUE
+)
+
+# Check if any enrichment results were found
+if (nrow(as.data.frame(ego)) > 0) {
+  plot <- dotplot(ego, showCategory = 15) + ggtitle("GO Enrichment - Biological Processes")
+  
+  png("Age_BiologicalProcesses_Prom.png", width = 800, height = 600)
+  print(plot)
+  dev.off()
+  
+  # Save GO terms
+  write.csv(as.data.frame(ego), "Age_GO_BP_ClusterProfiler_Prom.csv", row.names = FALSE)
+} else {
+  message("No significant GO enrichment found.")
+}
+
+png("Age_BioloigcalProcesses_Prom.png", width = 800, height = 600)
+plot
+dev.off()
+
+# Save top genes
+# Filter your results
+filtered <- top_age_clean[top_age_clean$logFC > log2(2) & top_age_clean$P.Value < 0.05, ]
+
+# Extract the region coordinates from rownames
+regions <- rownames(filtered)
+bed_df <- do.call(rbind, strsplit(regions, "_"))
+colnames(bed_df) <- c("chr", "start", "end")
+
+# Convert to proper types
+bed_df <- as.data.frame(bed_df, stringsAsFactors = FALSE)
+bed_df$start <- as.integer(bed_df$start)
+bed_df$end <- as.integer(bed_df$end)
+
+# Optional: add region name or signal score
+bed_df$name <- paste0("peak_", seq_len(nrow(bed_df)))
+bed_df$score <- round(filtered$logFC, 3)  # or t-stat/P if you prefer
+
+# Final BED columns: chr, start, end, name, score
+bed_out <- bed_df[, c("chr", "start", "end", "name", "score")]
+
+write.table(bed_out, "ASB_vs_YSB_top_peaks.bed",
+            sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+# Save csv
+filtered_annotated <- top_annotated[top_annotated$logFC > log2(2) & top_annotated$P.Value < 0.05, ]
+write.csv(filtered_annotated, file = "Age_Top_Final.csv")
