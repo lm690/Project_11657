@@ -1,0 +1,278 @@
+# Load required packages
+library(GenomicRanges)
+library(ChIPseeker)
+library(rGREAT)
+library(TxDb.Mmusculus.UCSC.mm39.knownGene)
+library(org.Mm.eg.db)
+library(ggplot2)
+library(rtracklayer)
+library(R.utils)
+library(patchwork)
+library(dplyr)
+library(tidyr)
+library(clusterProfiler)
+
+# Set working directory
+setwd("~/R/Chipmentation/TSS_Promoters/Annotation/Aged_Treatment_Condition")
+
+# Age
+top_int <- read.csv("~/R/Chipmentation/TSS_Promoters/Modelling/DE_Interact_TreatmentCFC_AgedOnly.csv", row.names = 1)
+
+# Split rownames into chr/start/end
+top_peaks <- rownames(top_int[top_int$P_Interaction < 0.05 & abs(top_int$logFC_Interaction) > log2(2), ])
+peak_df <- do.call(rbind, strsplit(top_peaks, "_"))
+colnames(peak_df) <- c("chr", "start", "end")
+peak_gr <- GRanges(
+  seqnames = peak_df[, "chr"],
+  ranges = IRanges(start = as.numeric(peak_df[, "start"]),
+                   end = as.numeric(peak_df[, "end"]))
+)
+
+
+# ChIPseeker
+txdb <- TxDb.Mmusculus.UCSC.mm39.knownGene
+
+peakAnno <- annotatePeak(peak_gr, TxDb = txdb, tssRegion = c(-3000, 3000), verbose = FALSE)
+
+# View annotation summary
+png("Interaction_AgeCondition_AnnoPie_Prom.png", width = 800, height = 600)
+plotAnnoPie(peakAnno)
+dev.off()
+
+png("Interaction_AgeCondition_AnnoBar_Prom.png", width = 800, height = 600)
+plotAnnoBar(peakAnno)
+dev.off()
+
+# Extract distances
+tss_distances <- as.data.frame(peakAnno)$distanceToTSS
+
+df <- data.frame(dist = tss_distances)
+
+plot <- ggplot(df, aes(x = dist)) +
+  geom_histogram(binwidth = 150, fill = "steelblue", color = "white") +
+  theme_minimal() +
+  labs(
+    title = "Distance to TSS",
+    x = "Distance to TSS (bp)",
+    y = "Peak Count"
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  xlim(-10000, 10000)
+
+png("Interaction_AgeCondition_Dist_Prom.png", width = 800, height = 600)
+plot
+dev.off()
+
+# Zoom
+plot <- ggplot(df, aes(x = dist)) +
+  geom_histogram(binwidth = 150, fill = "steelblue", color = "white") +
+  theme_minimal() +
+  labs(
+    title = "Peak Distribution Around TSS (±10kb)",
+    x = "Distance to TSS (bp)",
+    y = "Peak Count"
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  coord_cartesian(xlim = c(-5000, 5000))
+
+png("Interaction_AgeCondition_Dist_Zoom_Prom.png", width = 800, height = 600)
+plot
+dev.off()
+
+# rGREAT
+# Further filtering
+# Filter top_int first
+top_filtered <- top_int %>%
+  filter(P_Interaction < 0.05, abs(logFC_Interaction) > log2(2))  # or 1.5, up to you
+
+# Get GRanges
+peak_ids <- rownames(top_filtered)
+coords <- do.call(rbind, strsplit(peak_ids, "_"))
+colnames(coords) <- c("chr", "start", "end")
+filtered_gr <- GenomicRanges::GRanges(
+  seqnames = coords[, "chr"],
+  ranges = IRanges::IRanges(start = as.numeric(coords[, "start"]),
+                            end = as.numeric(coords[, "end"]))
+)
+
+# Add TSS proximity filter
+anno_df <- as.data.frame(annotatePeak(filtered_gr, TxDb = txdb, tssRegion = c(-3000, 3000)))
+filtered_gr <- filtered_gr[abs(anno_df$distanceToTSS) < 3000]  # Only ±3kb TSS
+
+# Load chain
+chain <- import.chain("~/R/Chipmentation/TSS_Promoters/Annotation/mm39ToMm10.over.chain")
+
+# LiftOver
+filtered_gr_lifted <- liftOver(filtered_gr, chain)
+filtered_gr_lifted <- unlist(filtered_gr_lifted) # Flatten result
+
+# Remove peaks that didn’t map cleanly
+filtered_gr_lifted <- keepStandardChromosomes(filtered_gr_lifted, pruning.mode = "coarse")
+
+# Submit regions to GREAT
+job <- submitGreatJob(filtered_gr_lifted, species = "mm10")
+
+# Get GO and pathway enrichment
+go <- getEnrichmentTables(job)
+
+# Example: top GO Biological Process
+View(go$`GO Biological Process`)
+write.csv(go$`GO Biological Process`, "ACFC_GREAT_GO_BP_Prom.csv", row.names = FALSE)
+write.csv(go$`GO Molecular Function`, "ACFC_GREAT_GO_MF_Prom.csv", row.names = FALSE)
+write.csv(go$`GO Cellular Component`, "ACFC_GREAT_GO_CC_Prom.csv", row.names = FALSE)
+
+# Top genes
+# --- Step 1: Clean and parse peak names ---
+parts <- strsplit(rownames(top_int), "_")
+
+# Keep only entries that split into exactly 3 parts
+valid_rows <- lengths(parts) == 3
+top_int_clean <- top_int[valid_rows, ]
+parts_clean <- parts[valid_rows]
+
+# Convert to matrix and label columns
+peak_coords <- do.call(rbind, parts_clean)
+colnames(peak_coords) <- c("chr", "start", "end")
+
+# Create GRanges
+top_gr <- GRanges(
+  seqnames = peak_coords[, "chr"],
+  ranges = IRanges(
+    start = as.numeric(peak_coords[, "start"]),
+    end = as.numeric(peak_coords[, "end"])
+  )
+)
+
+# Add region names from rownames to GRanges and dataframe
+region_names <- rownames(top_int_clean)
+names(top_gr) <- region_names
+top_int_clean$region <- region_names
+
+# Annotate peaks
+txdb <- TxDb.Mmusculus.UCSC.mm39.knownGene
+peakAnno <- annotatePeak(top_gr, TxDb = txdb, tssRegion = c(-3000, 3000), verbose = FALSE)
+
+# Extract annotation and keep region names as rownames
+peak_anno_df <- as.data.frame(peakAnno@anno)
+peak_anno_df$region <- rownames(peak_anno_df)
+
+# Now join using "region"
+top_annotated <- left_join(top_int_clean, peak_anno_df, by = "region")
+
+# View
+head(top_annotated)
+
+# Filter promoter peaks within ±3kb of TSS and meeting significance thresholds
+promoter_peaks <- top_annotated %>%
+  filter(abs(distanceToTSS) <= 3000,
+         P_Interaction < 0.05,
+         abs(logFC_Interaction) > log2(2)) %>%
+  distinct(geneId, .keep_all = TRUE)
+
+# Convert Entrez IDs to gene symbols
+gene_symbols <- bitr(promoter_peaks$geneId,
+                     fromType = "ENTREZID",
+                     toType = "SYMBOL",
+                     OrgDb = org.Mm.eg.db)
+
+# Join symbols back to promoter_peaks
+promoter_peaks <- left_join(promoter_peaks,
+                            gene_symbols,
+                            by = c("geneId" = "ENTREZID"))
+
+# Save csv
+write.csv(promoter_peaks, file = "Interaction_AgeCondition_promoterpeaks_Prom.csv")
+
+# Now inspect the top hits with gene symbols
+head(promoter_peaks[, c("SYMBOL", "logFC_Interaction", "P_Interaction", "distanceToTSS", "annotation")])
+
+# Barplot
+# Filter for top 20 by absolute logFC_Interaction
+top_plot <- promoter_peaks %>%
+  arrange(desc(abs(logFC_Interaction))) %>%
+  slice_head(n = 20)
+
+# Plot
+plot <- ggplot(top_plot, aes(x = reorder(SYMBOL, logFC_Interaction), y = logFC_Interaction, fill = logFC_Interaction > 0)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_manual(values = c("red", "steelblue"), labels = c("Down", "Up")) +
+  theme_minimal() +
+  labs(
+    title = "Top 20 Promoter-Associated Differential Peaks",
+    x = "Gene Symbol",
+    y = "log2 Fold Change",
+    fill = "Direction"
+  )
+
+png("Interaction_AgeCondition_Promoter_Bar.png", width = 800, height = 600)
+plot
+dev.off()
+
+# Volcano
+plot <- ggplot(promoter_peaks, aes(x = logFC_Interaction, y = -log10(P_Interaction))) +
+  geom_point(aes(color = annotation), show.legend = TRUE) +
+  theme_minimal() +
+  labs(title = "Volcano Plot of Promoter Peaks",
+       x = "log2 Fold Change", y = "-log10(P-value)")
+
+
+png("Interaction_AgeCondition_Promoter_Volcano_Prom.png", width = 800, height = 600)
+plot
+dev.off()
+
+# TSS distance
+plot <- ggplot(promoter_peaks, aes(x = distanceToTSS)) +
+  geom_histogram(binwidth = 200, fill = "darkgreen", color = "white") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  theme_minimal() +
+  labs(title = "Distribution of Distance to TSS (Promoter Peaks)",
+       x = "Distance to TSS (bp)", y = "Count")
+
+png("Interaction_AgeCondition_Promoter_TSS_Prom.png", width = 800, height = 600)
+plot
+dev.off()
+
+# GO enrichment
+ego <- enrichGO(
+  gene          = promoter_peaks$SYMBOL,
+  OrgDb         = org.Mm.eg.db,
+  keyType       = "SYMBOL",
+  ont           = "BP",
+  pAdjustMethod = "BH",
+  qvalueCutoff  = 0.1,
+  readable      = TRUE
+)
+
+plot <- dotplot(ego, showCategory = 15) + ggtitle("GO Enrichment - Biological Processes")
+
+png("Interaction_AgeCondition_BioloigcalProcesses_Prom.png", width = 800, height = 600)
+plot
+dev.off()
+
+#Save clean results
+write.csv(top_int_clean, file="Interaction_AgeCondition_Prom.csv")
+
+# Save top genes
+# Filter your results
+filtered <- top_int_clean[top_int_clean$logFC_Interaction > log2(2) & top_int_clean$P_Interaction < 0.05, ]
+
+# Extract the region coordinates from rownames
+regions <- rownames(filtered)
+bed_df <- do.call(rbind, strsplit(regions, "_"))
+colnames(bed_df) <- c("chr", "start", "end")
+
+# Convert to proper types
+bed_df <- as.data.frame(bed_df, stringsAsFactors = FALSE)
+bed_df$start <- as.integer(bed_df$start)
+bed_df$end <- as.integer(bed_df$end)
+
+# Optional: add region name or signal score
+bed_df$name <- paste0("peak_", seq_len(nrow(bed_df)))
+bed_df$score <- round(filtered$logFC_Interaction, 3)  # or t-stat/P if you prefer
+
+# Final BED columns: chr, start, end, name, score
+bed_out <- bed_df[, c("chr", "start", "end", "name", "score")]
+
+write.table(bed_out, "Interaction_AgeCondition_top_peaks.bed",
+            sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
